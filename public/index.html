@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>YouTube Play Proxy</title>
+  <style>
+    body { font-family: sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+    #url { width: 70%; padding: 8px; }
+    button { padding: 8px 16px; }
+    video { width: 100%; margin-top: 16px; background: #000; }
+    #status { margin-top: 8px; }
+    #status.error { color: #b00; }
+    #progressWrap { width: 100%; background: #eee; border-radius: 4px; margin-top: 8px; overflow: hidden; display: none; }
+    #progressBar { height: 8px; width: 0%; background: #3b82f6; transition: width 0.2s; }
+  </style>
+</head>
+<body>
+  <h1>YouTube Play Proxy</h1>
+
+  <input id="url" type="text" placeholder="Paste a YouTube video URL..." />
+  <button id="playBtn">Play</button>
+  <p id="status"></p>
+  <div id="progressWrap"><div id="progressBar"></div></div>
+
+  <video id="player" controls></video>
+
+  <script>
+    const urlInput = document.getElementById("url");
+    const playBtn = document.getElementById("playBtn");
+    const player = document.getElementById("player");
+    const status = document.getElementById("status");
+    const progressWrap = document.getElementById("progressWrap");
+    const progressBar = document.getElementById("progressBar");
+
+    // Same extraction logic as the server - used here only so we know which
+    // video ID to poll /api/progress for while /api/play is still working.
+    function extractVideoId(url) {
+      const match = url.match(
+        /(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([\w-]{11})/
+      );
+      return match ? match[1] : null;
+    }
+
+    function setStatus(text, isError) {
+      status.textContent = text;
+      status.classList.toggle("error", !!isError);
+    }
+
+    playBtn.addEventListener("click", async () => {
+      const videoUrl = urlInput.value.trim();
+      if (!videoUrl) return;
+
+      const videoId = extractVideoId(videoUrl);
+      setStatus("Resolving stream via yt-dlp...");
+      progressWrap.style.display = videoId ? "block" : "none";
+      progressBar.style.width = "0%";
+
+      // Poll /api/progress every 500ms so the user sees download/merge
+      // progress while the /api/play request below is still in flight.
+      let polling = true;
+      if (videoId) {
+        (async function poll() {
+          while (polling) {
+            try {
+              const p = await (await fetch(`/api/progress?videoId=${videoId}`)).json();
+              if (p.stage === "downloading") {
+                setStatus(`Downloading with yt-dlp... ${p.percent.toFixed(0)}%`);
+                progressBar.style.width = `${p.percent}%`;
+              } else if (p.stage === "merging") {
+                setStatus("Merging video + audio with ffmpeg...");
+                progressBar.style.width = "100%";
+              }
+            } catch (_) { /* ignore transient poll errors */ }
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        })();
+      }
+
+      try {
+        // Ask our backend to resolve the YouTube URL into a direct,
+        // playable stream URL (server does the yt-dlp work).
+        const res = await fetch(`/api/play?url=${encodeURIComponent(videoUrl)}`);
+        const data = await res.json();
+        polling = false;
+
+        if (!res.ok) {
+          setStatus("Error: " + (data.error || "unknown error"), true);
+          progressWrap.style.display = "none";
+          return;
+        }
+
+        // Set the resolved direct stream URL as the <video> source and play.
+        player.src = data.streamUrl;
+        player.play();
+        setStatus("Playing.");
+        progressWrap.style.display = "none";
+      } catch (err) {
+        polling = false;
+        setStatus("Request failed: " + err.message, true);
+        progressWrap.style.display = "none";
+      }
+    });
+  </script>
+</body>
+</html>

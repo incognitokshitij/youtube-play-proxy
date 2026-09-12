@@ -1,0 +1,12 @@
+{
+  "name": "youtube-play-proxy",
+  "version": "1.0.0",
+  "description": "Minimal demo: paste a YouTube URL, play it in a <video> tag via yt-dlp",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
