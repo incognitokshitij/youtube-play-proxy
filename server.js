@@ -28,10 +28,13 @@ fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/downloads", express.static(DOWNLOAD_DIR));
 
-// Tracks in-progress downloads by "sessionId:videoId" so two requests for
-// the same video (e.g. a double-click, or a page refresh while it's still
-// fetching) don't launch two overlapping yt-dlp processes writing to the
-// same files.
+// Tracks the currently running/queued download CHAIN per sessionId (not per
+// video). Every /api/play for the same viewer - whether it's the same video
+// again or a different one from a duplicate tab - gets appended to this
+// chain, so downloads for one viewer always run one at a time. Without this,
+// a second video request arriving while the first is still downloading
+// would run deleteOtherDownloads() concurrently and rip the first
+// download's in-progress temp files out from under it.
 const inFlight = new Map();
 
 // Tracks the latest known progress per "sessionId:videoId" (stage + percent)
@@ -151,14 +154,20 @@ app.get("/api/play", (req, res) => {
     url,
   ];
 
-  // If a download for this viewer+video is already running, piggyback on
-  // it instead of starting a second yt-dlp process.
-  let downloadPromise = inFlight.get(key);
-  if (!downloadPromise) {
+  // Chain this download after whatever's currently running/queued for this
+  // SESSION (regardless of which video that was) - guarantees the cleanup
+  // step below never runs while a previous download is still writing files.
+  const previous = inFlight.get(sessionId) || Promise.resolve();
+
+  const downloadPromise = previous.catch(() => {}).then(() => {
+    // Someone else already finished downloading this exact video while we
+    // were waiting our turn in the queue - nothing left to do.
+    if (fs.existsSync(outputPath)) return;
+
     progress.set(key, { stage: "starting", percent: 0 });
     deleteOtherDownloads(sessionDir, videoId);
 
-    downloadPromise = new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       // spawn (rather than execFile) gives us the output as it streams in,
       // instead of all at once when the process exits - that's what lets
       // us report live progress.
@@ -186,9 +195,9 @@ app.get("/api/play", (req, res) => {
         if (code !== 0) return reject(new Error(stderrBuf || `yt-dlp exited with code ${code}`));
         resolve();
       });
-    }).finally(() => inFlight.delete(key));
-    inFlight.set(key, downloadPromise);
-  }
+    });
+  });
+  inFlight.set(sessionId, downloadPromise);
 
   downloadPromise
     .then(() => {
