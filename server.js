@@ -7,6 +7,17 @@ const crypto = require("crypto");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// YouTube's bot-detection often blocks yt-dlp outright ("Sign in to confirm
+// you're not a bot"), especially from cloud/datacenter IPs like Railway's.
+// Passing cookies from a real logged-in browser session makes requests look
+// like an actual signed-in user, which avoids most of that blocking.
+//
+// cookies.txt is bundled directly into the deployed image/repo (no env var)
+// - exported from a browser and committed alongside the code.
+const cookiesPath = path.join(__dirname, "cookies.txt");
+const hasCookies = fs.existsSync(cookiesPath);
+console.log(hasCookies ? "yt-dlp: using cookies from " + cookiesPath : "yt-dlp: no cookies configured");
+
 // Where downloaded/merged videos get cached and served from. Each viewer
 // gets their own subfolder (see getSessionId below) so one person's video
 // can't be deleted out from under another person playing something else
@@ -130,7 +141,10 @@ app.get("/api/play", (req, res) => {
   //   combined/progressive format if that pairing isn't available.
   // --merge-output-format mp4: tell yt-dlp/ffmpeg to mux the pair into mp4.
   // -o: where to write the resulting file.
+  // --cookies: only added when cookies.txt exists - makes yt-dlp look like
+  // a signed-in browser to dodge YouTube's bot-detection block.
   const args = [
+    ...(hasCookies ? ["--cookies", cookiesPath] : []),
     "-f", "bv*[vcodec^=avc1][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
     "--merge-output-format", "mp4",
     "-o", outputPath,
